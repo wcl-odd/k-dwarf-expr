@@ -1,6 +1,6 @@
-# Executable DWARF expression semantics
+# DWARF Expression Semantics in K
 
-K rules, expression cases, validation scripts, and recorded results accompanying the paper. Run the commands below from this directory.
+Executable operational semantics of DWARF expressions in the K Framework, with LLDB/GDB test cases and validation scripts. Recorded results accompany the implementation. Run the commands below from this directory.
 
 ## Installation
 
