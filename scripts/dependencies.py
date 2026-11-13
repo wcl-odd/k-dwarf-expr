@@ -44,11 +44,8 @@ def root_observation(case, payload, context, evidence):
 
 
 def implicit_observation(case, payload, context, directory, options, evidence):
-    """Resolve a referenced DIE by invoking K on its supplied location expression.
-
-    A DW_AT_const_value is metadata, so observing it needs no expression.
-    Cycles and missing interface data are observation gaps, never guessed values.
-    The original implicit-pointer result and every additional K outcome are retained.
+    """Resolve a DIE using its supplied expression or DW_AT_const_value metadata.
+    Cycles and missing inputs remain observation gaps; retain the K outcomes.
     """
     result = payload.get("result") or {}
     offset = case.observation_inputs.get("projection_byte_offset", 0)

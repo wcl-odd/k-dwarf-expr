@@ -1,8 +1,4 @@
-"""Check requirements on K outcomes. Never execute DWARF operations.
-
-Object materialization only follows a location already returned by K, using the
-fixed interface, including its sparse memory. Unknown bits are data, never wildcard expectations.
-"""
+"""Check K outcomes using fixed interface data; unknown bits remain unavailable."""
 
 from copy import deepcopy
 import re
@@ -196,12 +192,8 @@ def _type(case, value):
 
 
 def scalar_equal(number, width, signed, expected):
-    """Observe integer Scalar equality after source-preserving promotion.
-
-    ExpectScalar constructs the expected Scalar; its width/sign are operands
-    of equality, not independent requirements on the actual DWARF type.
-    A generic K value has no native Scalar signedness. Only classify its
-    equality when both signedness interpretations give the same answer.
+    """Compare Scalar values using source-preserving promotion.
+    Expected width/sign govern equality; ambiguous generic signedness is uncheckable.
     """
     if number is None or width is None:
         return None, {"limitation": "actual integer value/width is not observable"}
@@ -273,11 +265,7 @@ def materialize(case, payload):
             }
         )
         if count > register_width:
-            # An original debugger may spread an oversized register object
-            # across several physical registers. A single K register location
-            # and an address-width general-purpose register value in the interface do not specify that placement.
-            # Padding here would fabricate unavailable object bits and turn an
-            # observation gap into an inconsistent verdict (or a false consistent verdict).
+            # Placement across multiple registers is unknown; padding would invent bits.
             return (
                 None,
                 reads,
@@ -566,11 +554,7 @@ from cases import replace_case as replace
 
 
 def materialize_returned_members(case, payload):
-    """Observe fields using the base location returned by K and interface data for the containing object.
-
-    This is a test observation, never a fabricated K composite result. Each
-    interface read and placement is retained; missing bytes remain observation gaps.
-    """
+    """Observe fields from K's base location and supplied interface; missing bytes remain unknown."""
     layout = case.observation_inputs["returned_member_layout"]
     result = payload.get("result") or {}
     if result.get("kind") != "memory":

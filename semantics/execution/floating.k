@@ -1,8 +1,7 @@
 requires "../domains/dwarf-domains.k"
 
-// For floating-point stack values, Int carries raw bits, independent of host floating point or Python calculations.
-// Pure functions decode exact binary rationals, compute, and round to the target format with roundTiesToEven.
-// Support binary32/binary64/x87 binary80/binary128; the 80-bit format stores its integer bit explicitly.
+// Raw floating bits use exact binary rationals and roundTiesToEven for binary32/64, x87 binary80, and
+// binary128.
 module DWARF-FLOATING
   imports DWARF-DOMAINS
 
@@ -31,8 +30,8 @@ module DWARF-FLOATING
   rule fpFractionWidth(W) => W -Int 1 -Int fpExponentWidth(W)
   rule fpBias(W) => (2 ^Int (fpExponentWidth(W) -Int 1)) -Int 1
 
-  // fpFinite(S,M,E) denotes (-1)^S * M * 2^E, with S in {0,1} and M >= 0; zero retains its sign.
-  // Operations produce a fixed quiet NaN; reinterpret and same-width convert preserve its payload.
+  // fpFinite(S,M,E) is (-1)^S * M * 2^E, including signed zero.
+  // Binary-arithmetic NaN results are fixed quiet NaNs; abs/neg change only the sign bit.
   syntax FloatParts ::= fpFinite(Int, Int, Int) | fpInfinity(Int) | "fpNaN"
   syntax FloatParts ::= fpDecode(Int, Int) [function]
                       | fpDecodeFields(Int, Int, Int, Int) [function]
@@ -53,7 +52,7 @@ module DWARF-FLOATING
   rule fpInfinityFraction(80) => 2 ^Int 63
   rule fpInfinityFraction(W) => 0 requires W =/=Int 80
 
-  // The denominator is positive. Integer-domain shifts, quotients, and remainders identify exact halfway cases and even low bits.
+  // Positive denominators and integer arithmetic identify exact halfway cases for ties-to-even rounding.
   syntax Int ::= fpRoundQuotient(Int, Int) [function]
                | fpRoundScaled(Int, Int, Int) [function]
                | fpRatioLog(Int, Int) [function]
@@ -166,7 +165,7 @@ module DWARF-FLOATING
   rule floatBop(divOp, N1, N2, W) => someInt(fpDivide(fpDecode(N2, W), fpDecode(N1, W), W))
   rule floatBop(_, _, _, _) => noInt [owise]
 
-  // Comparison returns -1/0/1 or 2 for unordered; with NaN, ne is true and every other relation is false.
+  // Comparison returns -1/0/1 or 2 (unordered); for NaN only ne is true.
   syntax Int ::= fpOrder(FloatParts, FloatParts) [function]
                | fpIntegerOrder(Int, Int) [function]
   rule fpOrder(fpNaN, _) => 2

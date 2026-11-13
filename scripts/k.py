@@ -46,8 +46,7 @@ def run(case, directory, options):
         final_purpose = dwarf.initializer_argument(term, "$PURPOSE")
     else:
         program, final_context, final_purpose = dwarf.root_inputs(term)
-    # Prepared E retains original bytes as inert audit data. No OP or operand
-    # is decoded in Python; legacy/unexpanded configurations retain byte tokens.
+    # Keep byte evidence for input-identity checks, including unexpanded inputs.
     decoded_program = program if dwarf.label(program) == "decodedExpression" else None
     if decoded_program is not None:
         supplied = dwarf.decode_bytes(decoded_program["args"][3])
@@ -189,8 +188,7 @@ def run(case, directory, options):
             ),
         )
         runtime = type_entries.pop('"runtime"', None)
-        # K String token JSON carries its textual value without quotes in the
-        # output. Accept either spelling only as a key, never a value default.
+        # K Map keys may use quoted or unquoted String tokens.
         runtime = type_entries.pop("runtime", runtime)
         if runtime is not None:
             interface_document = {

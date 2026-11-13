@@ -21,19 +21,28 @@ _children_lock = threading.Lock()
 
 
 def kill_tree(child):
-    """Stop owned descendants even when a nested verifier creates new sessions."""
+    """Stop discovered descendants from every thread, including separate sessions."""
     pending = [child.pid]
     descendants = []
+    seen = set()
     while pending:
         pid = pending.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
         descendants.append(pid)
         try:
-            pending.extend(
-                int(p)
-                for p in Path(f"/proc/{pid}/task/{pid}/children").read_text().split()
-            )
-        except (OSError, ValueError):
-            pass
+            threads = list(Path(f"/proc/{pid}/task").iterdir())
+        except OSError:
+            continue
+        # Children belong to the thread that launched them; scan all threads.
+        for thread in threads:
+            try:
+                pending.extend(
+                    int(p) for p in (thread / "children").read_text().split()
+                )
+            except (OSError, ValueError):
+                pass
     for pid in reversed(descendants):
         try:
             os.kill(pid, signal.SIGKILL)
@@ -46,7 +55,7 @@ def kill_tree(child):
 
 
 def stop_children():
-    """Cancel only child process groups launched by this adapter instance."""
+    """Cancel owned child processes and their discovered descendants."""
     with _children_lock:
         children = list(_children)
     for child in children:
@@ -82,8 +91,7 @@ def execute(command, directory, timeout):
         stdout, stderr = child.communicate(timeout=timeout)
         stderr = stderr or ""
     except (subprocess.TimeoutExpired, KeyboardInterrupt) as error:
-        # K and compilers spawn children. Stop the whole invocation, not only
-        # its Python/JVM parent, and preserve any output already produced.
+        # Preserve output while stopping the invocation's process tree.
         kill_tree(child)
         stdout, stderr = child.communicate()
         with _children_lock:

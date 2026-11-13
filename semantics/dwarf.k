@@ -1,7 +1,7 @@
 requires "execution/core.k"
 requires "frontend/frontend.k"
 
-// Compatible runtime entry: pure frontend preparation enters the independent core without consuming operation-execution rewrites.
+// Pure frontend initialization enters the decoded core without consuming execution rewrites.
 module DWARF
   imports DWARF-CORE
   imports DWARF-FRONTEND

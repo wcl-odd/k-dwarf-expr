@@ -1,11 +1,9 @@
-// Two formal input formats: offset-annotated OP text and hexadecimal raw bytes.
-// External hexadecimal numbers are literals, not signed two's-complement encodings; convert to mathematical Int before checking source ranges.
-// Separate parsing modules prevent treating hex-file token 11 as decimal integer 11.
+// Offset-annotated text and raw hex bytes use separate parsers. Text hexadecimal operands denote
+// mathematical integers.
 module DWARF-TEXT-SYNTAX
   imports INT-SYNTAX
   syntax HexInteger ::= r"-?0[xX][0-9a-fA-F]+" [token]
   syntax Literal ::= Int | HexInteger
-  // lit0..31 encode their value in the name and take no additional Literal operand.
   syntax ByteLiterals ::= List{Literal, ""}
   syntax Op ::= "DW_OP_lit0"
               | "DW_OP_lit1"
@@ -48,7 +46,6 @@ module DWARF-TEXT-SYNTAX
               | "DW_OP_const4s" Literal
               | "DW_OP_const8u" Literal
               | "DW_OP_const8s" Literal
-              // Variable-length constants and direct addresses still use mathematical integers as text operands.
               | "DW_OP_constu" Literal
               | "DW_OP_consts" Literal
               | "DW_OP_addr" Literal
@@ -57,7 +54,6 @@ module DWARF-TEXT-SYNTAX
               | "DW_OP_const_type" Literal "[" ByteLiterals "]"
               | "DW_OP_regval_type" Literal Literal
               | "DW_OP_push_object_address"
-              // breg0..31 take only an offset; the register number is already in the OP name.
               | "DW_OP_breg0" Literal
               | "DW_OP_breg1" Literal
               | "DW_OP_breg2" Literal
@@ -94,13 +90,11 @@ module DWARF-TEXT-SYNTAX
               | "DW_OP_bregx" Literal Literal
               | "DW_OP_fbreg" Literal
               | "DW_OP_call_frame_cfa"
-              // K evaluates call references and uses function-entry state and external address spaces.
               | "DW_OP_call2" Literal | "DW_OP_call4" Literal | "DW_OP_call_ref" Literal
               | "DW_OP_entry_value" "[" ByteLiterals "]"
               | "DW_OP_xderef" | "DW_OP_xderef_size" Literal | "DW_OP_xderef_type" Literal Literal
               | "DW_OP_form_tls_address"
               | "DW_OP_implicit_pointer" Literal Literal
-              // Dereference: default size, explicit byte count, or byte count plus base-type reference.
               | "DW_OP_deref"
               | "DW_OP_deref_size" Literal
               | "DW_OP_deref_type" Literal Literal
@@ -114,7 +108,6 @@ module DWARF-TEXT-SYNTAX
               | "DW_OP_drop"
               | "DW_OP_swap"
               | "DW_OP_rot"
-              // Computations take stack operands and no literal operands except plus_uconst's immediate.
               | "DW_OP_abs" | "DW_OP_neg" | "DW_OP_not"
               | "DW_OP_plus_uconst" Literal
               | "DW_OP_and" | "DW_OP_div" | "DW_OP_minus" | "DW_OP_mod"
@@ -126,7 +119,7 @@ module DWARF-TEXT-SYNTAX
               | "DW_OP_nop"
               | "DW_OP_skip" Literal
               | "DW_OP_bra" Literal
-              // reg alone forms the whole simple description or current fragment; a standalone result does not read register contents.
+              // reg must stand alone within its description or fragment; it returns register identity.
               | "DW_OP_reg0"
               | "DW_OP_reg1"
               | "DW_OP_reg2"
@@ -160,14 +153,13 @@ module DWARF-TEXT-SYNTAX
               | "DW_OP_reg30"
               | "DW_OP_reg31"
               | "DW_OP_regx" Literal
-              // A location-description result marker, not a stack operation; it must end the input or immediately precede a piece delimiter.
+              // stack_value must end the description or immediately precede a piece delimiter.
               | "DW_OP_stack_value"
               // Implicit byte blocks omit a redundant length; piece sizes are bytes and bit_piece sizes are bits.
               | "DW_OP_implicit_value" "[" ByteLiterals "]"
               | "DW_OP_piece" Literal
               | "DW_OP_bit_piece" Literal Literal
-  // A nonempty input must end with a separate END; the old unannotated operation list is not accepted here.
-  // For example: 0x0: DW_OP_consts -0x1, 0x2: DW_OP_stack_value, 0x3.
+  // Text input ends with a standalone END offset; for example, 0: DW_OP_lit7, 1.
   syntax TextProgram ::= Literal
                        | Literal ":" Op "," TextProgram [symbol(textInstruction)]
   syntax Program ::= TextProgram
@@ -175,7 +167,7 @@ module DWARF-TEXT-SYNTAX
 endmodule
 
 module DWARF-HEX-SYNTAX
-  // Capture the entire longest numeric token first, then let K require exactly two digits; never split 117f into 11 7f.
+  // Each hex-byte token must contain exactly two digits; 117f is not split into bytes.
   syntax HexByte ::= r"(0[xX])?[0-9a-fA-F]+" [token]
   syntax HexProgram ::= List{HexByte, ""}
   syntax Program ::= HexProgram

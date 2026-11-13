@@ -6,11 +6,8 @@ module DWARF-NORMALIZATION
   imports DWARF-EXPRESSION
   syntax Operation ::= sourceEntry(ByteBlock)
 
-  // Purely map concrete OP names to shared internal operations; do not execute operations or modify the stack.
-  // constOp(N), bregxOp(R,D), derefOp(S), and derefTypeOp(S,T) are internal constructors, not external input syntax.
-  // unavailableOperation retains an operation whose operand conditions fail; no execution rule applies when it is reached.
-  // K converts hexadecimal tokens to mathematical integers; existing Ints retain their values.
-  // Decoded operands are also Ints, so both input formats share normalize equations.
+  // Normalize source operations without executing them. Invalid operand conditions produce
+  // unavailableOperation, which has no execution rule.
   syntax String ::= hexIntegerString(HexInteger) [function, total, hook(STRING.token2string)]
   syntax Int ::= number(Literal) [function]
                | hexadecimal(String) [function]
@@ -21,16 +18,13 @@ module DWARF-NORMALIZATION
   rule hexadecimal(S) => String2Base(substrString(S, 2, lengthString(S)), 16)
     requires substrString(S, 0, 1) =/=String "-"
 
-  // The second normalize(OP,A) argument is the target address width in bits.
-  // _ means that a variant does not use A; only equations needing it bind a named A.
-  // For example, const2u checks its 16-bit source range; Const performs the actual truncation to A bits.
+  // A is address width in bits; source operand ranges are checked before execution truncates results.
   syntax Operation ::= normalize(Op, Int) [function]
-  // nopOp takes no stack operand; skipOp/braOp source displacements are signed 16-bit values, not address-width-truncated values.
-  // Text and bytes share this check; out-of-range text becomes unavailableOperation, not an input syntax error.
+  // skip/bra displacements are signed 16-bit values in both input formats.
   rule normalize(DW_OP_addrx I, _) => addrxOp(number(I)) requires number(I) >=Int 0
   rule normalize(DW_OP_constx I, _) => constxOp(number(I)) requires number(I) >=Int 0
   rule normalize(DW_OP_push_object_address, _) => pushObjectAddressOp
-  // A typed constant's block length is a source byte count, not truncated to address width; execution checks the type's storage size.
+  // Typed block lengths are byte counts; execution checks the type storage size.
   rule normalize(DW_OP_const_type T [ B ], _) => constTypeOp(number(T), literalBytes(B))
     requires number(T) >Int 0 andBool validBytes(B)
   rule normalize(DW_OP_regval_type R T, _) => regvalTypeOp(number(R), number(T))
@@ -50,7 +44,6 @@ module DWARF-NORMALIZATION
   rule normalize(DW_OP_nop, _) => nopOp
   rule normalize(DW_OP_skip D, _) => skipOp(number(D)) requires fitsSigned(number(D), 16)
   rule normalize(DW_OP_bra D, _) => braOp(number(D)) requires fitsSigned(number(D), 16)
-  // lit0..31 encode the constant in the name and have no extra operand; all use Const.
   rule normalize(DW_OP_lit0, _) => constOp(0)
   rule normalize(DW_OP_lit1, _) => constOp(1)
   rule normalize(DW_OP_lit2, _) => constOp(2)
@@ -83,9 +76,8 @@ module DWARF-NORMALIZATION
   rule normalize(DW_OP_lit29, _) => constOp(29)
   rule normalize(DW_OP_lit30, _) => constOp(30)
   rule normalize(DW_OP_lit31, _) => constOp(31)
-  // Fixed-width constants: 1/2/4/8 in the name is the source byte count; u/s selects the allowed numeric range.
-  // number converts text literals to mathematical integers: use -1 for const1s, not 255 to denote 0xff.
-  // These conditions check source inputs, not lossless fit in the target; narrower targets may truncate.
+  // Fixed constants use their encoded source width and signedness; text gives the mathematical value
+  // (const1s -1, not 255). Narrower targets may truncate.
   rule normalize(DW_OP_const1u N, _) => constOp(number(N))
     requires fitsUnsigned(number(N), 8)
   rule normalize(DW_OP_const1s N, _) => constOp(number(N))
@@ -102,14 +94,12 @@ module DWARF-NORMALIZATION
     requires fitsUnsigned(number(N), 64)
   rule normalize(DW_OP_const8s N, _) => constOp(number(N))
     requires fitsSigned(number(N), 64)
-  // Variable-length constants are decoded in decoding.k; A does not bound their mathematical operands here.
-  // constu requires nonnegative operands, while consts permits any integer. Const pushes both modulo 2^A.
+  // constu is nonnegative; consts allows any integer. Execution pushes both modulo 2^A.
   rule normalize(DW_OP_constu N, _) => constOp(number(N)) requires number(N) >=Int 0
   rule normalize(DW_OP_consts N, _) => constOp(number(N))
-  // addr's source operand already has target address size, so require an unsigned A-bit value here.
+  // addr requires an unsigned A-bit source operand.
   rule normalize(DW_OP_addr N, A) => constOp(number(N)) requires fitsUnsigned(number(N), A)
-  // breg0..31 encode the register number in the name; D is any decoded signed offset.
-  // Normalization to bregxOp(R,D) lets one Breg rule perform register lookup, addition, and modular reduction.
+  // breg0..31 supply the register number in the name and any signed offset D.
   rule normalize(DW_OP_breg0 D, _) => bregxOp(0, number(D))
   rule normalize(DW_OP_breg1 D, _) => bregxOp(1, number(D))
   rule normalize(DW_OP_breg2 D, _) => bregxOp(2, number(D))
@@ -142,39 +132,34 @@ module DWARF-NORMALIZATION
   rule normalize(DW_OP_breg29 D, _) => bregxOp(29, number(D))
   rule normalize(DW_OP_breg30 D, _) => bregxOp(30, number(D))
   rule normalize(DW_OP_breg31 D, _) => bregxOp(31, number(D))
-  // bregx explicitly supplies nonnegative register number R; its offset D has the same meaning as in the variants above.
   rule normalize(DW_OP_bregx R D, _) => bregxOp(number(R), number(D)) requires number(R) >=Int 0
-  // fbregOp uses the externally resolved frame base; D likewise has no A-bit source-range restriction.
+  // fbreg offsets are signed integers, independent of address width.
   rule normalize(DW_OP_fbreg D, _) => fbregOp(number(D))
-  // Default dereference reads A/8 bytes into generic, requiring A to be divisible by eight.
-  // The sized form does not impose divisibility here; validReadSize checks its effective capacity.
+  // Default dereference reads A/8 bytes and requires byte-aligned A; sized reads check capacity at
+  // execution.
   rule normalize(DW_OP_deref, A) => derefOp(A /Int 8)
     requires A modInt 8 ==Int 0
-  // The source field for size S is one unsigned byte, hence 0..255.
-  // Check only the source field here; execution combines S with A to check generic capacity.
+  // Dereference size operands are unsigned bytes; execution also checks generic capacity.
   rule normalize(DW_OP_deref_size S, _) => derefOp(number(S))
     requires 0 <=Int number(S) andBool number(S) <=Int 255
-  // Typed reads: S is a byte count, T a positive base-type reference; no type-table query occurs yet.
-  // A separate derefTypeOp lets DerefType look up the type and interpret memory, without using ordinary Deref.
+  // Typed dereferences use a byte count and positive CU-relative type reference.
   rule normalize(DW_OP_deref_type S T, _) => derefTypeOp(number(S), number(T))
     requires 0 <=Int number(S) andBool number(S) <=Int 255 andBool number(T) >Int 0
-  // References are CU-relative offsets; resolveType handles generic reference 0, without lookup here.
+  // Conversion reference 0 denotes generic; other references are CU-relative.
   rule normalize(DW_OP_convert T, _) => convertOp(number(T)) requires number(T) >=Int 0
   rule normalize(DW_OP_reinterpret T, _) => reinterpretOp(number(T)) requires number(T) >=Int 0
-  // dup copies the top and over the next entry; normalization reuses Pick instead of separate duplication rules.
+  // dup/over are Pick at depths 0/1.
   rule normalize(DW_OP_dup, _) => pickOp(0)
   rule normalize(DW_OP_over, _) => pickOp(1)
-  // pickOp also has an unsigned-byte operand; execution uses stackAt to check stack depth.
+  // pick uses an unsigned-byte depth; execution checks the stack.
   rule normalize(DW_OP_pick K, _) => pickOp(number(K)) requires 0 <=Int number(K) andBool number(K) <=Int 255
-  // These three stack operations have no literal operands and map directly to their internal constructors.
   rule normalize(DW_OP_drop, _) => dropOp
   rule normalize(DW_OP_swap, _) => swapOp
   rule normalize(DW_OP_rot, _) => rotOp
-  // Computational normalization selects calculations without changing the stack; core rules determine operand order and type conditions.
   rule normalize(DW_OP_abs, _) => unaryOp(absOp)
   rule normalize(DW_OP_neg, _) => unaryOp(negOp)
   rule normalize(DW_OP_not, _) => unaryOp(notOp)
-  // X's upper bound depends on the actual operand type and is checked by uop.
+  // The immediate's upper bound depends on the operand type and is checked at execution.
   rule normalize(DW_OP_plus_uconst X, _) => unaryOp(plusUconstOp(number(X))) requires number(X) >=Int 0
   rule normalize(DW_OP_and, _) => binaryOp(andOp)
   rule normalize(DW_OP_div, _) => binaryOp(divOp)
@@ -193,7 +178,7 @@ module DWARF-NORMALIZATION
   rule normalize(DW_OP_le, _) => compareOp(leOp)
   rule normalize(DW_OP_lt, _) => compareOp(ltOp)
   rule normalize(DW_OP_ne, _) => compareOp(neOp)
-  // reg stores only a DWARF number; it neither queries the register table nor creates a stack value.
+  // reg denotes a register location without reading contents or pushing a value.
   rule normalize(DW_OP_reg0, _) => regxOp(0)
   rule normalize(DW_OP_reg1, _) => regxOp(1)
   rule normalize(DW_OP_reg2, _) => regxOp(2)
@@ -227,7 +212,6 @@ module DWARF-NORMALIZATION
   rule normalize(DW_OP_reg30, _) => regxOp(30)
   rule normalize(DW_OP_reg31, _) => regxOp(31)
   rule normalize(DW_OP_regx R, _) => regxOp(number(R)) requires number(R) >=Int 0
-  // Recognize only the result marker here; separate location-result rules check final position and a nonempty stack.
   rule normalize(DW_OP_stack_value, _) => stackValueOp
   rule normalize(DW_OP_piece N, _) => pieceOp(number(N)) requires number(N) >=Int 0
   rule normalize(DW_OP_bit_piece N K, _) => bitPieceOp(number(N), number(K))
@@ -241,8 +225,6 @@ module DWARF-NORMALIZATION
   syntax ByteBlock ::= literalBytes(ByteLiterals) [function]
   rule literalBytes(.ByteLiterals) => .Bytes
   rule literalBytes((N:Literal REST:ByteLiterals)) => byteCons(number(N), literalBytes(REST))
-  // Every declared OP has a normalization result; unmet conditions retain unavailableOperation.
-  // [owise] applies only when other equations do not; unknown OP names are rejected earlier during syntax parsing.
-  // Thus invalid source operands, like missing interface data, cannot be misreported as normal completion.
+  // Unmet operand conditions produce unavailableOperation; unknown text operation names fail parsing.
   rule normalize(O, _) => unavailableOperation [owise]
 endmodule

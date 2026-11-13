@@ -1,12 +1,10 @@
 requires "floating.k"
 
-// Integer/floating-point calculations and conversions only compute values; they do not read configuration cells or change the PC or stack.
-// An unmet precondition returns noInt: no normal calculation result, not an error classification.
+// Pure numeric calculations return noInt when their preconditions are unmet.
 module DWARF-COMPUTATIONS
   imports DWARF-FLOATING
 
-  // The effective width of g is A; a base type uses its own W, not its storage size in bytes.
-  // Type identity does not affect numeric interpretation but is preserved by core rules; well-formed inputs ensure positive widths.
+  // Generic width is A; a base type uses its effective W independently of storage size.
   syntax Int ::= width(Ty, Int) [function, symbol(typeWidth(_,_)_DWARF-COMPUTATIONS_Int_Ty_Int)]
   rule width(g, A) => A
   rule width(base(_, _, W, _), _) => W
@@ -14,13 +12,13 @@ module DWARF-COMPUTATIONS
   rule signedType(g) => false
   rule signedType(base(_, E, _, _)) => signedEncoding(E)
 
-  // Ordinary operands follow their base-type encoding; generic operands use unsigned bit patterns.
-  // Shift counts and plus_uconst immediates use this interpretation; abs/neg/div select a signed view separately.
+  // Ordinary operands follow their encoding; generic operands use unsigned patterns. abs/neg/div select a
+  // signed view.
   syntax Int ::= operandValue(Int, Ty, Int) [function]
   rule operandValue(N, g, A) => bits(N, A)
   rule operandValue(N, base(ID, E, W, B), _) => interpret(N, base(ID, E, W, B))
 
-  // In conversions, reference 0 denotes the address-width generic type, not a type-table entry.
+  // Conversion reference 0 selects generic without a type-table lookup.
   syntax OptionalType ::= resolveType(Map, Int) [function]
   rule resolveType(_, 0) => someType(g)
   rule resolveType(TS, REF) => lookupType(TS, REF) requires REF >Int 0
@@ -28,7 +26,7 @@ module DWARF-COMPUTATIONS
   syntax Ty ::= getType(OptionalType) [function]
   rule getType(someType(T)) => T
 
-  // Sections 2.5.1.1/2: explicit base types preserve identity; reference 0 does not denote generic in these two operations.
+  // Typed constants and typed registers require a base type; reference 0 is not generic here.
   syntax OptionalValue ::= constantValue(ByteBlock, ByteOrder, OptionalType) [function]
                          | registerTypedValue(OptionalInt, OptionalType, Int) [function]
   rule constantValue(B, ORDER, someType(base(ID, ENC, W, SIZE))) =>
@@ -40,20 +38,15 @@ module DWARF-COMPUTATIONS
     requires supportedType(base(ID, ENC, W, SIZE)) andBool W <=Int RW
   rule registerTypedValue(_, _, _) => noValue [owise]
 
-  // Section 2.5.1.6 specifies target-type conversion, not the earlier project restriction against out-of-range results.
-  // Integer narrowing keeps the target low bits and interprets them as two's complement where appropriate. Section 2.5.1 leaves generic signedness unspecified;
-  // this model chooses an unsigned source view for conversion and a nonnegative bit-pattern representative for a generic target.
-  // This is an explicit consumer choice; a different consumer choice alone does not make DWARF invalid.
-  // Boolean targets normalize the interpreted source value to 0/1 before target-width truncation.
-  // Boolean sources use their own effective width as unsigned integers; Boolean/float conversion remains undefined.
+  // Integer targets keep low bits; generic sources use unsigned bits (a consumer choice).
+  // Boolean targets normalize to 0/1; Boolean sources are unsigned. Boolean/float is unsupported.
   syntax Bool ::= booleanType(Ty) [function]
                 | represents(Int, Ty, Int) [function]
   rule booleanType(g) => false
   rule booleanType(base(_, E, _, _)) => E ==String "DW_ATE_boolean"
   rule represents(N, T, A) => fitsSigned(N, width(T, A)) requires signedType(T) andBool width(T, A) <=Int 4096
   rule represents(N, T, A) => fitsUnsigned(N, width(T, A)) requires notBool signedType(T) andBool width(T, A) <=Int 4096
-  // For very large DIE widths, compare the bits actually required by the value rather than allocating 2^W to validate zero.
-  // 4096 selects the checking algorithm, not a type-width limit; both checks define the same mathematical range.
+  // 4096 selects a range-checking algorithm, not a type-width limit.
   rule represents(N, T, A) => fitsByBits(N, width(T, A)) requires notBool signedType(T) andBool width(T, A) >Int 4096
   rule represents(N, T, A) => fitsByBits(N, width(T, A) -Int 1) requires signedType(T) andBool N >=Int 0 andBool width(T, A) >Int 4096
   rule represents(N, T, A) => fitsByBits(0 -Int N -Int 1, width(T, A) -Int 1) requires signedType(T) andBool N <Int 0 andBool width(T, A) >Int 4096
@@ -75,10 +68,9 @@ module DWARF-COMPUTATIONS
   rule conversionOperand(N, g, A) => bits(N, A)
   rule conversionOperand(N, base(ID, E, W, B), A) => operandValue(N, base(ID, E, W, B), A)
   syntax OptionalInt ::= integerConversion(Int, Ty, Int) [function]
-  // Keep an already representable mathematical integer directly, also avoiding construction of 2^W for very large DIE widths.
   rule integerConversion(N, T, A) => someInt(N) requires represents(N, T, A)
   rule integerConversion(N, T, A) => someInt(resultValue(N, T, A, false)) requires notBool represents(N, T, A)
-  // For floating-point types, Int carries bits; conversions use exact rationals, and conversion to an integer truncates toward zero.
+  // Floating Int carriers hold bits; float-to-integer conversion truncates toward zero.
   rule convert(N, SOURCE, someType(base(_, "DW_ATE_float", W, _)), A) =>
     someInt(fpFromInteger(conversionOperand(N, SOURCE, A), W))
     requires integerType(SOURCE) andBool notBool booleanType(SOURCE) andBool floatWidth(W)
@@ -94,23 +86,22 @@ module DWARF-COMPUTATIONS
   rule checkedFloatInteger(someInt(N), T, A) => someInt(N) requires represents(N, T, A)
   rule checkedFloatInteger(_, _, _) => noInt [owise]
   rule convert(_, _, _, _) => noInt [owise]
-  // Reinterpret requires equal effective bit widths, not equal storage sizes in bytes.
-  // A base-type target selects its representative by encoding; a generic target preserves N, including negative representatives.
+  // Reinterpretation requires equal effective widths. Base targets use their encoding; generic targets
+  // retain N, including negative representatives.
   rule reinterpret(N, SOURCE, someType(g), A) => someInt(N)
     requires supportedType(SOURCE) andBool width(SOURCE, A) ==Int A
   rule reinterpret(N, SOURCE, someType(base(ID, E, W, B)), A) => someInt(interpret(N, base(ID, E, W, B)))
     requires supportedType(SOURCE) andBool supportedType(base(ID, E, W, B)) andBool width(SOURCE, A) ==Int W
   rule reinterpret(_, _, _, _) => noInt [owise]
 
-  // The final Bool selects only the generic result representative: true for signed, false for unsigned.
-  // Ordinary base-type calculations follow their encoding without Boolean normalization; convert handles Boolean targets separately.
+  // The Bool selects the generic result representative: signed if true, unsigned otherwise. Base
+  // calculations follow their encoding without Boolean normalization.
   syntax Int ::= resultValue(Int, Ty, Int, Bool) [function]
   rule resultValue(N, g, A, true) => signedBits(N, A)
   rule resultValue(N, g, A, false) => bits(N, A)
   rule resultValue(N, base(ID, E, W, B), _, _) => interpret(N, base(ID, E, W, B))
 
-  // Unary calculations preserve the attached type. abs/neg interpret the input bits as signed even for unsigned base types.
-  // abs/neg of the minimum signed value have no result; truncating an unrepresentable mathematical result must not imply success.
+  // abs/neg interpret bits as signed even for unsigned base types; the minimum signed value has no result.
   syntax OptionalInt ::= integerUop(UnaryOperator, Int, Ty, Int) [function, symbol(integerUnary(_,_,_,_)_DWARF-COMPUTATIONS_OptionalInt_UnaryOperator_Int_Ty_Int)]
   rule integerUop(absOp, N, T, A) =>
     someInt(resultValue(absInt(signedBits(N, width(T, A))), T, A, true))
@@ -118,17 +109,15 @@ module DWARF-COMPUTATIONS
   rule integerUop(negOp, N, T, A) =>
     someInt(resultValue(0 -Int signedBits(N, width(T, A)), T, A, true))
     requires signedBits(N, width(T, A)) =/=Int (0 -Int (2 ^Int (width(T, A) -Int 1)))
-  // Truncate the two's-complement bitwise complement to W bits; K's unbounded integers are not finite bit strings.
   rule integerUop(notOp, N, T, A) =>
     someInt(resultValue(~Int bits(N, width(T, A)), T, A, false))
-  // X must fit an unsigned W-bit source field of the operand type; interpret it, add it to N, and wrap the result.
+  // plus_uconst requires an unsigned W-bit immediate and wraps the sum.
   rule integerUop(plusUconstOp(X), N, T, A) =>
     someInt(resultValue(operandValue(N, T, A) +Int operandValue(X, T, A), T, A, false))
     requires fitsUnsigned(X, width(T, A))
   rule integerUop(_, _, _, _) => noInt [owise]
 
-  // Arguments follow pop order: N1 is the top, N2 is below it; subtraction/division compute N2 OP N1.
-  // The low W bits of addition/subtraction/multiplication do not depend on representative choice; source views still follow the type explicitly.
+  // N1 is the top operand; subtraction and division compute N2 OP N1.
   syntax OptionalInt ::= integerBop(BinaryOperator, Int, Int, Ty, Int) [function, symbol(integerBinary(_,_,_,_,_)_DWARF-COMPUTATIONS_OptionalInt_BinaryOperator_Int_Int_Ty_Int)]
   rule integerBop(plusOp, N1, N2, T, A) =>
     someInt(resultValue(operandValue(N2, T, A) +Int operandValue(N1, T, A), T, A, false))
@@ -137,16 +126,14 @@ module DWARF-COMPUTATIONS
   rule integerBop(mulOp, N1, N2, T, A) =>
     someInt(resultValue(operandValue(N2, T, A) *Int operandValue(N1, T, A), T, A, false))
 
-  // div always uses signed division; /Int truncates toward zero. The only signed W-bit quotient overflow is MIN/-1.
-  // Check only total comparisons in the precondition; perform division afterwards, avoiding premature evaluation of /Int 0.
+  // div is signed and truncates toward zero; zero divisors and MIN/-1 have no result.
   rule integerBop(divOp, N1, N2, T, A) =>
     someInt(resultValue(signedBits(N2, width(T, A)) /Int signedBits(N1, width(T, A)), T, A, true))
     requires signedBits(N1, width(T, A)) =/=Int 0
       andBool notBool (signedBits(N2, width(T, A)) ==Int (0 -Int (2 ^Int (width(T, A) -Int 1)))
                        andBool signedBits(N1, width(T, A)) ==Int -1)
 
-  // mod follows the source type: signed uses the truncated remainder %Int; unsigned/generic uses an unsigned view.
-  // Only a nonzero divisor is required; MIN % -1 = 0 remains defined and does not inherit div's quotient-overflow restriction.
+  // mod follows source signedness; generic is unsigned. MIN % -1 is defined as zero.
   rule integerBop(modOp, N1, N2, T, A) =>
     someInt(resultValue(signedBits(N2, width(T, A)) %Int signedBits(N1, width(T, A)), T, A, false))
     requires signedType(T) andBool signedBits(N1, width(T, A)) =/=Int 0
@@ -154,7 +141,6 @@ module DWARF-COMPUTATIONS
     someInt(resultValue(bits(N2, width(T, A)) %Int bits(N1, width(T, A)), T, A, false))
     requires notBool signedType(T) andBool bits(N1, width(T, A)) =/=Int 0
 
-  // Bitwise operations act on two W-bit patterns and preserve the low W bits and the original type.
   rule integerBop(andOp, N1, N2, T, A) =>
     someInt(resultValue(bits(N2, width(T, A)) &Int bits(N1, width(T, A)), T, A, false))
   rule integerBop(orOp, N1, N2, T, A) =>
@@ -162,8 +148,7 @@ module DWARF-COMPUTATIONS
   rule integerBop(xorOp, N1, N2, T, A) =>
     someInt(resultValue(bits(N2, width(T, A)) xorInt bits(N1, width(T, A)), T, A, false))
 
-  // Counts follow the original type, with unsigned counts for generic; all three shifts require 0 <= count < W.
-  // shr interprets data as unsigned, shra as signed; >>Int itself is an arithmetic right shift.
+  // Shift counts satisfy 0 <= count < W. shr treats data as unsigned, shra as signed.
   rule integerBop(shlOp, N1, N2, T, A) =>
     someInt(resultValue(bits(N2, width(T, A)) <<Int operandValue(N1, T, A), T, A, false))
     requires 0 <=Int operandValue(N1, T, A) andBool operandValue(N1, T, A) <Int width(T, A)
@@ -175,8 +160,7 @@ module DWARF-COMPUTATIONS
     requires 0 <=Int operandValue(N1, T, A) andBool operandValue(N1, T, A) <Int width(T, A)
   rule integerBop(_, _, _, _, _) => noInt [owise]
 
-  // Comparisons use a different generic view: g and signed base types are compared as signed integers.
-  // Interpret the bits before comparing; for example, -1:g and 255:g are equal when A=8.
+  // Generic and signed-base comparisons use a signed view of the effective bits.
   syntax Int ::= comparisonValue(Int, Ty, Int) [function]
   rule comparisonValue(N, g, A) => signedBits(N, A)
   rule comparisonValue(N, base(ID, E, W, B), _) => interpret(N, base(ID, E, W, B))
@@ -190,11 +174,10 @@ module DWARF-COMPUTATIONS
   syntax Int ::= indicator(Bool) [function, symbol(truthValue(_)_DWARF-COMPUTATIONS_Int_Bool)]
   rule indicator(true) => 1
   rule indicator(false) => 0
-  // The core first matches equal operand types; this helper computes only 0/1 and does not retain the operand type in the result.
+  // Comparison results are 0/1; the core checks matching operand types.
   syntax OptionalInt ::= integerCmp(CompareOperator, Int, Int, Ty, Int) [function, symbol(integerCompare(_,_,_,_,_)_DWARF-COMPUTATIONS_OptionalInt_CompareOperator_Int_Int_Ty_Int)]
   rule integerCmp(CMP, N1, N2, T, A) =>
     someInt(indicator(relation(CMP, comparisonValue(N2, T, A), comparisonValue(N1, T, A))))
-  // Dispatch each operation family to integer or floating-point pure functions by type, without adding an execution phase.
   syntax OptionalInt ::= uop(UnaryOperator, Int, Ty, Int) [function, symbol(calcUnary(_,_,_,_)_DWARF-COMPUTATIONS_OptionalInt_UnaryOperator_Int_Ty_Int)]
                        | bop(BinaryOperator, Int, Int, Ty, Int) [function, symbol(calcBinary(_,_,_,_,_)_DWARF-COMPUTATIONS_OptionalInt_BinaryOperator_Int_Int_Ty_Int)]
                        | cmp(CompareOperator, Int, Int, Ty, Int) [function, symbol(calcCompare(_,_,_,_,_)_DWARF-COMPUTATIONS_OptionalInt_CompareOperator_Int_Int_Ty_Int)]

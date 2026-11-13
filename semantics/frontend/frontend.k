@@ -1,7 +1,7 @@
 requires "decoding.k"
 
-// Pure frontend: structural checks, normalization of complete operations, decodable-prefix preparation, and read-only metadata preparation.
-// It does not evaluate operations, query live processes, introduce an execution phase, or consume execution rewrites.
+// Prepare decoded prefixes and supplied metadata using pure equations, without consuming execution
+// rewrites.
 module DWARF-FRONTEND
   imports DWARF-DECODING
 
@@ -35,7 +35,7 @@ module DWARF-FRONTEND
   rule prepareOperation(sourceEntry(B), ENC) => entryValueOp(prepareProgram(rawBytes(B), ENC))
   rule prepareOperation(OP, _) => OP [owise]
 
-  // Prepare each supplied DIE once; references remain references, and the actual execution budget bounds recursive calls.
+  // Prepare supplied DIEs once; recursive calls are bounded by the execution budget.
   syntax Context ::= prepareContext(Context) [function]
   rule prepareContext(ctx(A, E, TS, RS, M, FB, CFA, ARCH, DA, BIAS, OBJ)) =>
     ctx(A, E, prepareTypes(TS, E), RS, M, FB, CFA, ARCH, DA, BIAS, OBJ)

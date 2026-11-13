@@ -1,8 +1,7 @@
 requires "normalization.k"
 
-// DWARF 5 Section 7.6, Table 7.9, Appendix C: decode only; do not execute operations.
-// Instruction records a normalized operation and next position; Operand records an integer and operand end position.
-// noInstruction/noOperand mean the current query has no result, not that DWARF is invalid.
+// Decode according to DWARF 5 Section 7.6, Table 7.9, and Appendix C. Absent instruction/operand results
+// are not validity judgments.
 module DWARF-DECODING
   imports DWARF-NORMALIZATION
 
@@ -19,8 +18,8 @@ module DWARF-DECODING
   syntax Int ::= byteNumber(HexByte) [function]
   rule byteNumber(B) => String2Base(byteDigits(B), 16)
 
-  // A complete text sequence compares mathematical offsets only; its final number is END.
-  // Recursive suffixes may have a nonzero END; only a wholly empty expression requires that number to be zero.
+  // Text checks declared increasing offsets and END, not encoded lengths; an empty expression has END
+  // zero.
   syntax Bool ::= validInput(Program) [function]
                 | orderedText(TextProgram) [function]
   rule validInput(N:Literal) => number(N) ==Int 0
@@ -53,7 +52,7 @@ module DWARF-DECODING
   rule emptyInput((_:Literal : _:Op, _:TextProgram)) => false
   rule emptyInput(B:HexProgram) => byteLength(B) ==Int 0
 
-  // byteAt queries code bytes independently of target memory; missing bytes are never filled with zero.
+  // Code-byte queries are independent of target memory; missing bytes stay unknown.
   syntax OptionalInt ::= byteAt(ByteCode, Int) [function]
   rule byteAt(byteCons(B, _), 0) => someInt(B)
   rule byteAt(byteCons(_, REST), P) => byteAt(REST, P -Int 1) requires P >Int 0
@@ -61,7 +60,7 @@ module DWARF-DECODING
   rule byteAt((_:HexByte REST:HexProgram), P) => byteAt(REST, P -Int 1) requires P >Int 0
   rule byteAt(_, _) => noInt [owise]
 
-  // For fixed operands, check the whole range, assemble an unsigned integer, then interpret signedness at the source width.
+  // Fixed operands use target byte order and source-width signedness after a complete-range check.
   syntax Operand ::= readFixed(ByteCode, Int, Int, ByteOrder, Bool) [function]
   rule readFixed(B, P, SIZE, E, SIGNED) =>
     operand(fixedInterpret(codeUnsigned(B, P, SIZE, E), SIZE, SIGNED), P +Int SIZE)
@@ -80,8 +79,8 @@ module DWARF-DECODING
   rule fixedInterpret(N, SIZE, true) => signedBits(N, 8 *Int SIZE)
   rule fixedInterpret(N, _, false) => N
 
-  // LEB128 group order is independent of target byte order. Each recursion consumes one actual byte;
-  // missing termination returns noOperand. Length is unbounded, and nonminimal encodings are accepted.
+  // LEB128 ignores target byte order. Length is unbounded and nonminimal encodings are accepted; missing
+  // termination has no result.
   syntax Operand ::= readLEB(ByteCode, Int, Bool) [function]
                    | lebFrom(ByteCode, Int, Bool, Int, Int) [function]
                    | lebByte(ByteCode, Int, Bool, Int, Int, Int) [function]
@@ -102,8 +101,6 @@ module DWARF-DECODING
   rule lebFinish(N, _, BYTE, true) => N requires BYTE <Int 64
   rule lebFinish(N, _, _, false) => N
 
-  // Both inputs return instruction(OP,NEXT), retaining the original E.
-  // A text END has no operation; do not infer or validate the user's declared encoding lengths here.
   syntax Encoding ::= encoding(Int, ByteOrder, Int)
   syntax Encoding ::= encodingOf(Context) [function]
   rule encodingOf(ctx(A, ORDER, _, _, _, _, _, _, _, _, _) #as C) =>
@@ -124,8 +121,8 @@ module DWARF-DECODING
     requires hasInt(byteAt(B, P))
   rule sourceInstructionAt(rawBytes(_), _, _) => noInstruction [owise]
 
-  // call_ref and implicit-pointer reference widths come from the DWARF format, not the processor address width.
-  // DWARF 2 ref_addr uses address size; the input supplier must preserve this independent metadata.
+  // call_ref and implicit-pointer references use DWARF offset size; DWARF 2 ref_addr uses address size.
+  // Supply this metadata independently.
   syntax Instruction ::= decodeEncoded(ByteCode, Int, Int, Encoding) [function]
                        | implicitReference(ByteCode, Operand) [function]
                        | implicitDisplacement(Int, Operand) [function]
@@ -166,7 +163,7 @@ module DWARF-DECODING
   syntax Int ::= next(Program, Int, Context) [function, symbol(nextPosition(_,_,_)_DWARF-DECODING_Int_Program_Int_Context)]
   rule next(E, P, C) => instructionNext(instructionAt(E, P, C))
 
-  // Raw block lengths use ULEB128; check the complete block and never treat its bytes as operations.
+  // ULEB128 block lengths require the complete block; block contents create no instruction boundaries.
   syntax ByteBlock ::= codeBlock(ByteCode, Int, Int) [function]
   rule codeBlock(_, _, 0) => .Bytes
   rule codeBlock(B, P, N) => byteCons(getInt(byteAt(B, P)), codeBlock(B, P +Int 1, N -Int 1))
@@ -181,9 +178,7 @@ module DWARF-DECODING
   rule decodeBitPiece(_, noOperand) => noInstruction
   rule finishBitPiece(N, operand(K, P)) => instruction(bitPieceOp(N, K), P)
   rule finishBitPiece(_, noOperand) => noInstruction
-  // Opcode dispatch from Table 7.9.
-  // Corresponds to normalize(DW_OP_implicit_value [ B ], A), normalize(DW_OP_piece N, A),
-  // and normalize(DW_OP_bit_piece N K, A); raw blocks need no reconstructed text literals. P follows the opcode at the first operand byte.
+  // Opcode dispatch follows Table 7.9; P points to the first operand byte.
   rule decodeOpcode(B, 158, P, _, _) => decodeBlock(B, readLEB(B, P, false))
   rule decodeOpcode(B, 147, P, A, _) => withOperand(147, readLEB(B, P, false), A)
   rule withOperand(147, operand(N, NEXT), A) => instruction(normalize(DW_OP_piece N, A), NEXT)
@@ -241,7 +236,7 @@ module DWARF-DECODING
   rule decodeOpcode(_, 37, P, A, _) => instruction(normalize(DW_OP_shr, A), P)
   rule decodeOpcode(_, 38, P, A, _) => instruction(normalize(DW_OP_shra, A), P)
   rule decodeOpcode(_, 39, P, A, _) => instruction(normalize(DW_OP_xor, A), P)
-  // braOp (0x28)/skipOp (0x2f) displacements are signed 16-bit integers in target byte order; P follows the opcode.
+  // bra (0x28) and skip (0x2f) use signed 16-bit displacements in target byte order.
   rule decodeOpcode(B, 40, P, A, E) => withOperand(40, readFixed(B, P, 2, E, true), A)
   rule withOperand(40, operand(N, NEXT), A) => instruction(normalize(DW_OP_bra N, A), NEXT)
   rule decodeOpcode(_, 41, P, A, _) => instruction(normalize(DW_OP_eq, A), P)
@@ -284,7 +279,6 @@ module DWARF-DECODING
   rule decodeOpcode(_, 77, P, A, _) => instruction(normalize(DW_OP_lit29, A), P)
   rule decodeOpcode(_, 78, P, A, _) => instruction(normalize(DW_OP_lit30, A), P)
   rule decodeOpcode(_, 79, P, A, _) => instruction(normalize(DW_OP_lit31, A), P)
-  // reg0..31 (0x50..0x6f) have no operands; regx (0x90) uses an arbitrary-precision ULEB128 register number.
   rule decodeOpcode(_, 80, P, A, _) => instruction(normalize(DW_OP_reg0, A), P)
   rule decodeOpcode(_, 81, P, A, _) => instruction(normalize(DW_OP_reg1, A), P)
   rule decodeOpcode(_, 82, P, A, _) => instruction(normalize(DW_OP_reg2, A), P)
@@ -397,15 +391,13 @@ module DWARF-DECODING
   rule withOperand(168, operand(T, NEXT), A) => instruction(normalize(DW_OP_convert T, A), NEXT)
   rule decodeOpcode(B, 169, P, A, _) => withOperand(169, readLEB(B, P, false), A)
   rule withOperand(169, operand(T, NEXT), A) => instruction(normalize(DW_OP_reinterpret T, A), NEXT)
-  // Section 2.5.1.1: const_type has a ULEB128 type reference and a one-byte block length, not ULEB128.
-  // Return an instruction only after reading the entire block; opcode-like block bytes create no instruction boundaries.
+  // const_type uses a ULEB128 type reference and one-byte block length; the complete block is required.
   rule decodeOpcode(B, 164, P, _, E) => constTypeReference(B, readLEB(B, P, false), E)
   rule decodeOpcode(B, 165, P, _, _) => regTypeReference(B, readLEB(B, P, false))
-  // Do not decode vendor opcodes; stop at their start as for unknown operations, without executing a speculative suffix.
+  // Unknown and vendor opcodes stop decoding at their start.
   rule decodeOpcode(_, _, _, _, _) => noInstruction [owise]
   rule withOperand(_, noOperand, _) => noInstruction
 
-  // For multiple operands, query the next only after the previous succeeds; still return a single Instruction.
   syntax Instruction ::= bregxFirst(ByteCode, Operand, Int) [function]
                        | bregxSecond(Int, Operand, Int) [function]
                        | typedFirst(ByteCode, Operand, Int) [function]

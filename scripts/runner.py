@@ -14,9 +14,7 @@ import fcntl
 import hashlib
 
 
-# K serializes large builtin Maps as deep associative KAST trees. Allow their
-# JSON representation; subsequent cell/map traversal is iterative. Compact CLI
-# output avoids quadratic indentation for those complete configurations.
+# Allow deep KAST Maps; traversal is iterative and output uses compact JSON.
 sys.setrecursionlimit(max(sys.getrecursionlimit(), 100000))
 from processes import ROOT
 
@@ -61,12 +59,8 @@ FIELDS = {
 
 
 def parse_input(command, definition, environment):
-    """Cache only K's pure parser output, never an evaluation or a result.
-
-    The exact input bytes, complete definition fingerprint, parser options and
-    Java options identify an entry. In particular the hex parser only produces
-    byte tokens: opcode and LEB128 decoding still happens on every K execution.
-    Set DWARF_K_PARSE_CACHE=off to independently repeat parsing without reuse.
+    """Cache K parser output; DWARF_K_PARSE_CACHE=off disables reuse.
+    Evaluation and opcode/LEB128 decoding still run in K for every invocation.
     """
     if environment.get("DWARF_K_PARSE_CACHE") == "off":
         return subprocess.run(command, capture_output=True, text=True, env=environment)
@@ -159,8 +153,7 @@ def kstring(value):
 
 
 def entry_document(document):
-    # Function-entry state is supplied independently. Only immutable decoding/type data
-    # is inherited; missing entry registers, memory and frame data stay missing.
+    # Missing function-entry registers, memory, and frame data stay unknown.
     return {
         **{
             key: document[key]
@@ -259,12 +252,7 @@ def validate_runtime(doc, width, endian):
 
 
 def configuration_ast(document):
-    """Serialize validated interface data, not expression operands, as KAST.
-
-    K's JSON reader avoids the ambiguous surface Map concatenation grammar.
-    Balanced Map trees keep serialization depth logarithmic in the number of interface entries.
-    The constructors are those of dwarf-domains.k; K still checks their sorts.
-    """
+    """Serialize supplied interface data as KAST; K checks constructor sorts."""
 
     def app(name, *args):
         return {
@@ -736,11 +724,7 @@ def root_inputs(term):
 
 
 def source_context(term):
-    """Discard only frontend preparation wrappers, retaining supplied metadata.
-
-    This is structural provenance recovery, never DWARF decoding. Execution and
-    full-configuration checks continue to retain the prepared code itself.
-    """
+    """Recover supplied metadata from frontend wrappers for provenance checks."""
     if label(term) == "preparedDIE":
         return source_context(term["args"][0])
     if term.get("node") == "KToken":
@@ -873,11 +857,8 @@ def decode_bytes(node):
 
 
 def decode_diagnostic(state, position):
-    """Report a missing operation using K's decoded prefix and byte evidence.
-
-    This only observes constructors already produced by K. It does not decode
-    opcodes or operands, classify DWARF validity, or infer a semantic failure.
-    In particular, a bad suffix is irrelevant until the active PC reaches it.
+    """Locate missing instructions from K's saved prefix and byte evidence.
+    A bad suffix matters only when PC reaches it; this does not classify DWARF validity.
     """
     if label(state) != "evaluation":
         return None
@@ -889,8 +870,7 @@ def decode_diagnostic(state, position):
     if start != 0 or not 0 <= position < end:
         return None
 
-    # Byte decoding produces a contiguous prefix. Do not classify arbitrary
-    # gaps or operand positions in a caller-supplied algebraic expression.
+    # Diagnose only a contiguous decoded prefix.
     prefix_end = start
     while label(instructions) == "decodedInstruction":
         offset, _, following, instructions = instructions["args"]
@@ -903,8 +883,7 @@ def decode_diagnostic(state, position):
     if label(instructions) != "emptyInstructions" or position != prefix_end:
         return None
 
-    # Text inputs have no byte evidence. A core input may also deliberately
-    # omit evidence; neither is grounds for a byte-decoding diagnosis.
+    # Byte-decoding diagnoses require complete raw-byte evidence.
     raw = decode_bytes(evidence)
     if len(raw) != end or any(not 0 <= byte <= 255 for byte in raw):
         return None
@@ -941,14 +920,10 @@ def evaluate(expression, context, definition, depth, statistics, purpose):
         raise ValueError(
             f"compiled definition not found at {definition}; see README.md"
         )
-    # Expression bytecode is parsed by K. Its KORE output is passed through
-    # unchanged; Python does not inspect expression tokens or decoded operands.
+    # Pass K's parsed expression through unchanged.
     main_module = "DWARF"
     module, sort = "DWARF-HEX-SYNTAX", "Input"
-    # A parallel corpus run starts several Java frontends. On large hosts the
-    # JVM otherwise creates a host-sized GC pool per parser, exhausting thread
-    # limits and sometimes writing startup warnings into its KORE stdout.
-    # Respect an explicitly supplied processor limit.
+    # Limit parser JVM threads on large hosts, respecting an explicit limit.
     environment = os.environ.copy()
     input_tmp = Path(
         os.environ.get(
@@ -963,10 +938,7 @@ def evaluate(expression, context, definition, depth, statistics, purpose):
         and "ActiveProcessorCount" not in environment.get("JDK_JAVA_OPTIONS", "")
     ):
         java_options = (java_options + " -XX:ActiveProcessorCount=1").strip()
-    # Serial GC avoids allocating a
-    # separate parallel GC pool in each short-lived parser JVM. Respect a
-    # caller-selected collector; JVM startup warnings can otherwise corrupt
-    # KORE stdout when the host's thread quota is exhausted.
+    # Use serial GC unless the caller selected a collector.
     if not re.search(
         r"[+-]Use\w*GC", java_options + " " + environment.get("JDK_JAVA_OPTIONS", "")
     ):
@@ -1012,16 +984,13 @@ def evaluate(expression, context, definition, depth, statistics, purpose):
     with tempfile.TemporaryDirectory(prefix="input-", dir=input_tmp) as directory:
         program = Path(directory) / "program.kore"
         program.write_text(parsed.stdout)
-        # krun's -c argument holds a file name, not the potentially megabytes of
-        # interface data. Its parser receives a file containing that name.
+        # Pass interface data through files to avoid command-line size limits.
         reader = Path(directory) / "read-kore"
         reader.write_text(
             f"#!{sys.executable}\nimport pathlib, sys\n"
             "sys.stdout.write(pathlib.Path(pathlib.Path(sys.argv[1]).read_text()).read_text())\n"
         )
         reader.chmod(0o755)
-        # JSON KAST is a structural serialization of the existing data domains,
-        # not a second DWARF parser. Preserve every supplied register and memory byte.
         for name, term, sort in (
             ("CONTEXT", encoded_context, "Context"),
             ("STACK", encoded_stack, "Stack"),
@@ -1071,9 +1040,7 @@ def evaluate(expression, context, definition, depth, statistics, purpose):
             command + [str(program)], capture_output=True, text=True, env=environment
         )
         if process.returncode:
-            # Keep the actual serialized parser inputs on tool failure. A
-            # frontend warning on KORE stdout otherwise disappears with the
-            # temporary directory and cannot be diagnosed or used to repeat the invocation.
+            # Retain serialized parser inputs on tool failure for diagnosis and replay.
             failed = ROOT / "build/failed-inputs" / Path(directory).name
             failed.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(directory, failed)
@@ -1106,9 +1073,7 @@ def evaluate(expression, context, definition, depth, statistics, purpose):
         print(process.stderr, end="", file=sys.stderr)
     configuration = json.loads(process.stdout)
     term = configuration["term"]
-    # At depth 0 K may leave initGeneratedTopCell unsimplified, with no
-    # cells yet; retain the actual KAST and display the input stack.
-    # Report initial zeros before K has calculated the program length.
+    # At depth zero, K may retain its initializer; report input stack and initial zeros.
     if label(term) == "initGeneratedTopCell":
         return {
             "status": "incomplete",

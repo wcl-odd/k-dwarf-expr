@@ -1,8 +1,7 @@
 requires "computations.k"
 
-// Fixed expression E: operations and operands are decoded; code queries do not depend on the external input interface.
-// The final ByteBlock preserves raw-byte identity only; text or direct inputs use .Bytes.
-// It is audit data and takes no part in operation, boundary, or computation queries.
+// Decoded code queries are independent of the context. Raw bytes are audit data only; text inputs use
+// .Bytes.
 module DWARF-EXPRESSION
   imports DWARF-COMPUTATIONS
 
@@ -84,7 +83,8 @@ module DWARF-EXPRESSION
   rule next(E, P) => instructionNext(instructionAt(E, P))
   rule instructionNext(instruction(_, NEXT)) => NEXT
 
-  // The start, known next boundaries, and original END are valid; an undecodable suffix creates no guessed boundaries.
+  // Valid boundaries are START, known next positions, and END; undecodable suffixes add no guessed
+  // boundaries.
   syntax Bool ::= isBoundary(DecodedExpression, Int) [function]
                 | instructionBoundary(Instructions, Int) [function]
   rule isBoundary(decoded(START, END, CODE, _), P) =>
